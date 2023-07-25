@@ -1,0 +1,94 @@
+- name: Ansible deploy ml-models with DVC
+  hosts: buildbot02
+  become: true
+  become_user: buildbot
+
+  tasks:
+    # Get the repo (submodule are automatically fetched)
+    - name: git pull
+      ansible.builtin.git:
+        repo: git@github.com:slamcore/datasets.git
+        dest: /home/buildbot/datasets
+        accept_hostkey: yes
+        key_file: /home/buildbot/.ssh/id_ed25519_github
+        force: true
+
+    # Install DVC in a dedicated venv
+    - name: python package
+      pip:
+        name:
+          - dvc==2.56.0
+          - dvc-ssh
+        virtualenv_command: python3 -m venv .venv
+        virtualenv: /home/buildbot/datasets/.venv
+
+    # Get the files
+    - name: pull files
+      ansible.builtin.command:
+        chdir: /home/buildbot/datasets
+        cmd: .venv/bin/dvc pull -f
+
+    # Remove the files
+    - name: remove files
+      ansible.builtin.file:
+        path: /home/buildbot/datasets/{{ item }}
+        state: absent
+      with_items:
+        - Vicon_rig3_29-may-2023_sequence0
+        - Vicon_rig3_29-may-2023_sequence1
+        - Vicon_rig3_29-may-2023_sequence2
+        - Vicon_rig3_29-may-2023_sequence3
+        - Vicon_rig3_30-may-2023_sequence4
+        - Vicon_rig3_30-may-2023_sequence5
+
+    - name: Get storage left
+      shell: df -h # Filter the home line but keeps the header
+      register: df
+
+    - name: Printing results
+      debug: msg={{ df.stdout_lines }}
+
+    # Clear the cache
+    - name: clear cache
+      ansible.builtin.command:
+        chdir: /home/buildbot/datasets
+        cmd: .venv/bin/dvc gc -w -f -v
+
+    - name: Get storage left
+      shell: df -h # Filter the home line but keeps the header
+      register: df
+
+    - name: Printing results
+      debug: msg={{ df.stdout_lines }}
+
+    # Check download (#TODO: make it more robust)
+    - name: check files
+      stat:
+        path: "/home/buildbot/datasets/Vicon_rig3_29-may-2023_sequence0_trimmed"
+      register: dts
+
+    - name: Report if exists
+      debug:
+        msg: "Vicon_rig3_29-may-2023_sequence0_trimmed exists"
+      when: dts.stat.exists
+
+    - name: Report missing
+      debug:
+        msg: "Vicon_rig3_29-may-2023_sequence0_trimmed does NOT exist"
+      when: not dts.stat.exists
+
+    # Check removal (#TODO: make it more robust)
+    - name: check files
+      stat:
+        path: "/home/buildbot/datasets/Vicon_rig3_29-may-2023_sequence0"
+      register: dts
+
+    - name: Report if exists
+      debug:
+        msg: "Vicon_rig3_29-may-2023_sequence0 exists"
+      when: dts.stat.exists
+
+    - name: Report missing
+      debug:
+        msg: "Vicon_rig3_29-may-2023_sequence0 does NOT exist"
+      when: not dts.stat.exists

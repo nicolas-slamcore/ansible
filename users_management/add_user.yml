@@ -1,0 +1,17 @@
+- name: Ansible create user functionality module
+  hosts: buildbots
+
+  become: yes
+  tasks:
+  - name: Create sudo <user> with a password and a home
+    ansible.builtin.user:
+      name: <user>
+      comment: create user
+      group: sudo
+      password: '<hashed_password>' # https://computingforgeeks.com/generate-linux-user-encrypted-password-for-ansible
+      createhome: yes
+      home: /home/<user>
+      shell: /bin/bash
+      state: present
+      append: yes
+  # TODO: user could be set with with_items?

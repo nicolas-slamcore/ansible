@@ -1,0 +1,63 @@
+- name: Ansible deploy ml-models with DVC
+  hosts: nvibot
+  become: true
+  become_user: buildbot
+
+
+  tasks:
+  # Get the repo (submodule are automatically fetched)
+  - name: git clone
+    ansible.builtin.git:
+      repo: git@github.com:slamcore/ml-models.git
+      dest: /home/buildbot/ml-models
+      accept_hostkey: yes
+      key_file: /home/buildbot/.ssh/id_ed25519_github
+      single_branch: yes
+      version: main
+
+  # Install DVC in a dedicated venv
+  - name: python package
+    pip:
+      name:
+      - dvc
+      - dvc-ssh
+      virtualenv_command: python3 -m venv .venv
+      virtualenv: /home/buildbot/ml-models/.venv
+
+  # Configure DVC locally
+  - name: configure dvc user
+    ansible.builtin.command:
+      chdir: /home/buildbot/ml-models
+      cmd: .venv/bin/dvc remote modify --local ssh_sc_nas user buildbot
+
+  - name: configure dvc password
+    ansible.builtin.command:
+      chdir: /home/buildbot/ml-models
+      cmd: .venv/bin/dvc remote modify --local ssh_sc_nas password <buildbot-password-on-NAS>
+
+  - name: configure dvc local cache
+    ansible.builtin.command:
+      chdir: /home/buildbot/ml-models
+      cmd: .venv/bin/dvc cache dir --local ~/.cache/dvc-ml-models/
+
+  # Get the files
+  - name: pull files
+    ansible.builtin.command:
+      chdir: /home/buildbot/ml-models
+      cmd: .venv/bin/dvc pull
+
+  # Check download (#TODO: make it more robust)
+  - name: check files
+    stat:
+      path: "/home/buildbot/ml-models/person_instance_segmentation"
+    register: model
+
+  - name: Report if exists
+    debug:
+      msg: "person_instance_segmentation exists"
+    when: model.stat.exists
+
+  - name: Report missing
+    debug:
+      msg: "person_instance_segmentation does NOT exist"
+    when: not model.stat.exists

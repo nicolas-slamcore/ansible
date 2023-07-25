@@ -1,0 +1,23 @@
+- name: Install jetson
+  hosts: jetson
+  become: true
+
+  tasks:
+    - name: Import tasks
+      ansible.builtin.import_tasks: ../common/install_as_root.yml
+    - name: Install the latest version of packages
+      ansible.builtin.package:
+        name:
+          - python3.9-venv
+          - python3.9-dev
+          - ctop
+        state: latest
+        update_only: true
+
+    - name: Link datasets directory
+      ansible.builtin.file:
+        src: /home/nico/nvme/datasets/buildbot-datasets
+        dest: /home/buildbot/datasets
+        owner: nico
+        group: nico
+        state: link

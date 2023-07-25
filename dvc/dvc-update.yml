@@ -1,0 +1,50 @@
+- name: Ansible deploy ml-models with DVC
+  hosts: nvibot
+  become: true
+  become_user: buildbot
+
+  tasks:
+    # Update DVC in a dedicated venv for datasets
+    - name: python datasets package
+      pip:
+        name:
+          - dvc
+          - dvc-ssh
+        virtualenv_command: python3 -m venv .venv
+        virtualenv: /home/buildbot/datasets/.venv
+        state: latest
+
+    # Update DVC in a dedicated venv for ml-models
+    - name: python ml-models package
+      pip:
+        name:
+          - dvc
+          - dvc-ssh
+        virtualenv_command: python3 -m venv .venv
+        virtualenv: /home/buildbot/ml-models/.venv
+        state: latest
+
+    - name: Update bvenv python package
+      pip:
+        name:
+          - dvc
+          - dvc-ssh
+        state: latest
+        virtualenv: /home/buildbot/buildbot/buildbot_venv
+
+    # Check the version files
+    - name: check datasets version
+      ansible.builtin.command:
+        chdir: /home/buildbot/datasets
+        cmd: .venv/bin/dvc -V
+
+    - name: check ml-models version
+      ansible.builtin.command:
+        chdir: /home/buildbot/ml-models
+        cmd: .venv/bin/dvc -V
+
+    # Check the version files
+    - name: check bvenv version
+      ansible.builtin.command:
+        chdir: /home/buildbot/datasets
+        cmd: /home/buildbot/buildbot/buildbot_venv/bin/dvc -V

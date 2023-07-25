@@ -1,0 +1,11 @@
+- name: Ansible get storage left on home
+  hosts: desktop
+
+  tasks:
+    - name: Get storage left
+      ansible.builtin.shell: df -h
+      register: df
+
+    - name: Printing results
+      ansible.builtin.debug:
+        msg: {{ df.stdout_lines }}

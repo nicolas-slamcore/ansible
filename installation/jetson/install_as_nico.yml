@@ -1,0 +1,16 @@
+- name: Install jetson
+  hosts: jetson
+
+  tasks:
+    - name: Get passphrase
+      ansible.builtin.shell: echo $PASSPHRASE
+      environment:
+        PASSPHRASE: '{{ passphrase }}'
+      register: get_passphrase
+      changed_when: false
+
+    - name: Import tasks
+      ansible.builtin.import_tasks: ../common/install_as_nico.yml
+
+    - name: Pause until you have removed the keys in github and bitbucket
+      ansible.builtin.pause:

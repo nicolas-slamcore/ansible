@@ -1,0 +1,58 @@
+- name: Install the latest version of packages
+  ansible.builtin.package:
+    name:
+      - git
+      - build-essential
+      - python3-pip
+      - tmux
+      - neovim
+      - htop
+      - cowsay
+      - fortune
+      - cmake
+      - cmake-curses-gui
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - software-properties-common
+      - syncthing
+      - locate
+      - silversearcher-ag
+      - net-tools
+      - dnsutils
+      - iftop
+    state: latest
+    update_only: true
+
+- name: Add Docker GPG apt Key
+  ansible.builtin.apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+
+- name: Add Docker Repository
+  ansible.builtin.apt_repository:
+    repo: deb https://download.docker.com/linux/ubuntu focal stable
+    state: present
+
+- name: Update apt and install docker-ce
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+      - docker-compose
+
+    state: latest
+    update_cache: true
+
+- name: Add the user 'nico' in group  'docker'
+  ansible.builtin.user:
+    name: nico
+    group: docker
+
+- name: Create /home/buildbot
+  ansible.builtin.file:
+    path: /home/buildbot
+    state: directory
+    mode: '0755'

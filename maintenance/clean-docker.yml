@@ -1,0 +1,34 @@
+- name: Ansible clean containers and dockers
+  hosts: buildbots
+
+  gather_facts: false
+  tasks:
+  # Containers
+  - name: Get running containers
+    docker_host_info:
+      containers: yes
+    register: docker_info
+
+  - name: Stop running containers
+    docker_container:
+      name: "{{ item }}"
+      state: stopped
+    loop: "{{ docker_info.containers | map(attribute='Id') | list }}"
+
+  - name: Remove docker containers
+    shell: docker rm $(docker ps -aq);
+    when: (docker_info.containers | length) != 0
+
+  # Images
+  - name: Get details of all images
+    docker_host_info:
+      images: yes
+      verbose_output: yes
+    register: image_info
+
+  - name: Remove all images
+    docker_image:
+      name: "{{ item }}"
+      state: absent
+      force_absent: true
+    loop: "{{ image_info.images | map(attribute='Id') | list }}"
