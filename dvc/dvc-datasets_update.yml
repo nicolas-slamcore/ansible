@@ -9,7 +9,7 @@
       ansible.builtin.git:
         repo: git@github.com:slamcore/datasets.git
         dest: /home/buildbot/datasets
-        accept_hostkey: yes
+        accept_hostkey: true
         key_file: /home/buildbot/.ssh/id_ed25519_github
         force: true
 

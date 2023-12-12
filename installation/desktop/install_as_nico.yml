@@ -8,8 +8,18 @@
     - name: Get passphrase
       shell: echo $PASSPHRASE
       environment:
-        PASSPHRASE: '{{ passphrase }}'
+        PASSPHRASE: "{{ passphrase }}"
       register: get_passphrase
+
+    - name: Generate an OpenSSH keypair with the default values (4096 bits, rsa) and encrypted private key
+      community.crypto.openssh_keypair:
+        path: $HOME/.ssh/id_rsa_test
+        passphrase: "{{ get_passphrase.stdout }}"
+      register: perm_public_key
+
+    - name: Report perm public_key
+      ansible.builtin.debug:
+        msg: "permanent public key is {{ perm_public_key.public_key }}"
 
     - import_tasks: ../common/install_as_nico.yml
 
@@ -31,27 +41,27 @@
       ansible.builtin.git:
         repo: git@bitbucket.org:slamcore/{{ item }}.git
         dest: /home/nico/software/{{ item }}
-        accept_hostkey: yes
+        accept_hostkey: true
         key_file: $HOME/.ssh/id_rsa_nop
       with_items:
         - acceptance_tests
         - slam_utils
         - online_poc
         - buildbot
-      ignore_errors: yes
+      ignore_errors: true
 
     - name: git clone {{ item }}
       ansible.builtin.git:
         repo: git@github.com:slamcore/{{ item }}.git
         dest: /home/nico/software/{{ item }}
-        accept_hostkey: yes
+        accept_hostkey: true
         key_file: $HOME/.ssh/id_rsa_nop
       with_items:
         - position
         - slamtor
         - trajectory_evaluator
         - slamcore_packager
-      ignore_errors: yes
+      ignore_errors: true
 
     - name: Pause until you have removed the keys in github and bitbucket
       ansible.builtin.pause:

@@ -5,17 +5,22 @@
   tasks:
     - name: Import tasks
       ansible.builtin.import_tasks: ../common/install_as_root.yml
-    - name: Install the latest version of packages
+    - name: Install the latest version of desktop packages
       ansible.builtin.package:
         name:
           - python3.10-venv
           - python3.10-dev
+          - python3-pip
           - libcxsparse3
           - libtbb12
           - libusb-1.0-0
           - docker-ctop
+          - libboost-filesystem-dev
+          - cifs-utils
         state: latest
-        update_only: true
+        update_cache: true
+        cache_valid_time: 86400
+
 
     - name: Install from snap
       community.general.snap:

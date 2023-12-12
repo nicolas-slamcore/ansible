@@ -1,0 +1,23 @@
+- name: Ansible restart workers
+  hosts: buildbots
+  become: true
+  become_user: buildbot
+
+
+  gather_facts: false
+  # Restart manager and worker
+  tasks:
+    - name: Restart manager
+      shell: |
+        source /home/buildbot/buildbot/buildbot_venv/bin/activate
+        buildbot-worker restart buildbot/manager*/
+      args:
+        executable: /bin/bash
+        chdir: /home/buildbot
+    - name: Restart worker
+      shell: |
+        source /home/buildbot/buildbot/buildbot_venv/bin/activate
+        buildbot-worker restart buildbot/worker*/
+      args:
+        executable: /bin/bash
+        chdir: /home/buildbot

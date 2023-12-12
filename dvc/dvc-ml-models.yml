@@ -10,9 +10,9 @@
     ansible.builtin.git:
       repo: git@github.com:slamcore/ml-models.git
       dest: /home/buildbot/ml-models
-      accept_hostkey: yes
+      accept_hostkey: true
       key_file: /home/buildbot/.ssh/id_ed25519_github
-      single_branch: yes
+      single_branch: true
       version: main
 
   # Install DVC in a dedicated venv

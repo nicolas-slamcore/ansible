@@ -1,17 +1,7 @@
-- name: Generate an OpenSSH keypair with the default values (4096 bits, rsa) and encrypted private key
-  community.crypto.openssh_keypair:
-    path: $HOME/.ssh/id_rsa_test
-    passphrase: "{{ get_passphrase.stdout }}"
-  register: perm_public_key
-
 - name: Generate an OpenSSH keypair with the default values (4096 bits, rsa)
   community.crypto.openssh_keypair:
     path: $HOME/.ssh/id_rsa_nop
   register: tmp_public_key
-
-- name: Report perm public_key
-  ansible.builtin.debug:
-    msg: "permanent public key is {{ perm_public_key.public_key }}"
 
 - name: Report temp public_key
   ansible.builtin.debug:
@@ -25,26 +15,28 @@
   ansible.builtin.git: # noqa: latest
     repo: git@github.com:nojhan/liquidprompt.git
     dest: /home/nico/liquidprompt
-    accept_hostkey: yes
+    accept_hostkey: true
     key_file: $HOME/.ssh/id_rsa_nop
+  ignore_errors: true
 
 - name: Git clone perso
   ansible.builtin.git: # noqa: latest
     repo: git@github.com:nicolas-slamcore/{{ item }}.git
     dest: /home/nico/{{ item }}
-    accept_hostkey: yes
+    accept_hostkey: true
     key_file: $HOME/.ssh/id_rsa_nop
   with_items:
     - scripts
     - docker-perso
     - dotfiles
-  ignore_errors: yes
+  ignore_errors: true
 
 - name: Install dotfiles
   ansible.builtin.command:
     chdir: /home/nico/dotfiles
     cmd: ./scripts/install.sh
 
+# Broken ?
 - name: Install scripts
   ansible.builtin.command:
     chdir: /home/nico/scripts

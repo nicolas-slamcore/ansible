@@ -1,11 +1,11 @@
 - name: Ansible remove user
   hosts: buildbots
 
-  become: yes
+  become: true
   tasks:
   - name: Remove <user>
     ansible.builtin.user:
       name: <user>
       comment: remove <user>
       state: absent
-      remove: yes
+      remove: true

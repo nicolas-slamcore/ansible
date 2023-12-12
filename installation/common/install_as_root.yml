@@ -1,9 +1,8 @@
-- name: Install the latest version of packages
+- name: Install the latest version of common packages
   ansible.builtin.package:
     name:
       - git
       - build-essential
-      - python3-pip
       - tmux
       - neovim
       - htop
@@ -21,8 +20,10 @@
       - net-tools
       - dnsutils
       - iftop
+      - plantuml
     state: latest
-    update_only: true
+    update_cache: true
+    cache_valid_time: 86400
 
 - name: Add Docker GPG apt Key
   ansible.builtin.apt_key:
@@ -45,6 +46,7 @@
 
     state: latest
     update_cache: true
+    cache_valid_time: 86400
 
 - name: Add the user 'nico' in group  'docker'
   ansible.builtin.user:
@@ -55,4 +57,4 @@
   ansible.builtin.file:
     path: /home/buildbot
     state: directory
-    mode: '0755'
+    mode: "0755"

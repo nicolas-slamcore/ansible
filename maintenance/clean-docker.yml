@@ -6,7 +6,7 @@
   # Containers
   - name: Get running containers
     docker_host_info:
-      containers: yes
+      containers: true
     register: docker_info
 
   - name: Stop running containers
@@ -22,8 +22,8 @@
   # Images
   - name: Get details of all images
     docker_host_info:
-      images: yes
-      verbose_output: yes
+      images: true
+      verbose_output: true
     register: image_info
 
   - name: Remove all images

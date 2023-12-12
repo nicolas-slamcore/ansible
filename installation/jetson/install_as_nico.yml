@@ -1,14 +1,10 @@
 - name: Install jetson
   hosts: jetson
 
-  tasks:
-    - name: Get passphrase
-      ansible.builtin.shell: echo $PASSPHRASE
-      environment:
-        PASSPHRASE: '{{ passphrase }}'
-      register: get_passphrase
-      changed_when: false
+  vars_files:
+    - passphrase.yml
 
+  tasks:
     - name: Import tasks
       ansible.builtin.import_tasks: ../common/install_as_nico.yml
 
