@@ -1,0 +1,9 @@
+---
+- name: Create files with host-specific content
+  hosts: targets
+
+  tasks:
+    - name: Create a file from template
+      ansible.builtin.template:
+        src: target_template.j2
+        dest: "/tmp/scpack_require/file_name"
