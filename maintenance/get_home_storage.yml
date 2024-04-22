@@ -1,5 +1,5 @@
 - name: Ansible get storage left on home
-  hosts: desktop
+  hosts: buildbots
 
   tasks:
     - name: Get storage left
@@ -8,4 +8,4 @@
 
     - name: Printing results
       ansible.builtin.debug:
-        msg: {{ df.stdout_lines }}
+        msg: "{{ df.stdout_lines }}"
