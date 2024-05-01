@@ -27,6 +27,12 @@
         name:
           - shfmt
 
+    - name: Create /home/buildbot
+      ansible.builtin.file:
+        path: /home/buildbot
+        state: directory
+        mode: "0755"
+
     - name: Link datasets directory
       ansible.builtin.file:
         src: /home/nico/datasets/buildbot-datasets

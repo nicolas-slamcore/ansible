@@ -1,0 +1,17 @@
+---
+- name: Get if worker has running builds
+  hosts: buildbots
+
+  tasks:
+    - name: Get builds
+      ansible.builtin.shell: ps -fU buildbot|grep 'buildbot/worker'
+      register: ps
+      failed_when: ps.rc == 0
+      # failed_when: ps.rc != 0 and ps.stdout != ""
+
+
+
+    # - name: Printing results
+    #   ansible.builtin.debug:
+    #     msg: "{{ ps.stdout_lines }}"
+    #   when: ps.rc == 0

@@ -1,43 +1,46 @@
-- name: Generate an OpenSSH keypair with the default values (4096 bits, rsa)
+- name: Ensure the .ssh directory exists
+  ansible.builtin.file:
+    path: "~/.ssh"
+    state: directory
+    mode: "0700"
+    owner: "{{ ansible_user_id }}"
+    group: "{{ ansible_user_id }}"
+
+- name: Generate an SSH key pair
   community.crypto.openssh_keypair:
-    path: $HOME/.ssh/id_rsa_nop
-  register: tmp_public_key
+    path: "~/.ssh/id_rsa"
+    size: 2048
+    type: rsa
+    owner: "{{ ansible_user_id }}"
+    group: "{{ ansible_user_id }}"
+    mode: "0600"
+    passphrase: "{{ ssh_key_passphrase }}" # Use encrypted passphrase
+  register: ssh_key
 
-- name: Report temp public_key
+- name: Display the generated public key
   ansible.builtin.debug:
-    msg: "temporary public key is {{ tmp_public_key.public_key }} - please remove it from remote after this playbook"
+    msg: "SSH public key is: {{ ssh_key.public_key }}"
 
-- name: Pause until you have added the keys in github and bitbucket
-  ansible.builtin.pause:
-
-# Get the repos (submodule are automatically fetched)
 - name: Git clone liquidprompt
   ansible.builtin.git: # noqa: latest
-    repo: git@github.com:nojhan/liquidprompt.git
-    dest: /home/nico/liquidprompt
-    accept_hostkey: true
-    key_file: $HOME/.ssh/id_rsa_nop
+    repo: https://github.com/liquidprompt/liquidprompt.git
+    dest: ~/liquidprompt
   ignore_errors: true
 
-- name: Git clone perso
+- name: Ensure the ~/.tmux/plugins/tpm directory exists
+  ansible.builtin.file:
+    path: "~/.tmux/plugins/tpm"
+    state: directory
+    mode: "0700"
+    owner: "{{ ansible_user_id }}"
+    group: "{{ ansible_user_id }}"
+
+- name: Git clone tmux plugins
   ansible.builtin.git: # noqa: latest
-    repo: git@github.com:nicolas-slamcore/{{ item }}.git
-    dest: /home/nico/{{ item }}
-    accept_hostkey: true
-    key_file: $HOME/.ssh/id_rsa_nop
-  with_items:
-    - scripts
-    - docker-perso
-    - dotfiles
+    repo: https://github.com/tmux-plugins/tpm.git
+    dest: ~/.tmux/plugins/tpm
   ignore_errors: true
 
-- name: Install dotfiles
-  ansible.builtin.command:
-    chdir: /home/nico/dotfiles
-    cmd: ./scripts/install.sh
-
-# Broken ?
-- name: Install scripts
-  ansible.builtin.command:
-    chdir: /home/nico/scripts
-    cmd: ./install/install.sh
+# - name: Install and load chezmoi
+#   ansible.builtin.shell:
+#     cmd: if ! which chezmoi; then sh -c "$(curl -fsLS get.chezmoi.io/lb)" -- init --apply git@gitlab.com:nicolas.paquet.pro/chezmoi.git; fi

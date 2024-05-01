@@ -1,0 +1,43 @@
+- name: Generate an OpenSSH keypair with the default values (4096 bits, rsa)
+  community.crypto.openssh_keypair:
+    path: $HOME/.ssh/id_rsa_nop
+  register: tmp_public_key
+
+- name: Report temp public_key
+  ansible.builtin.debug:
+    msg: "temporary public key is {{ tmp_public_key.public_key }} - please remove it from remote after this playbook"
+
+- name: Pause until you have added the keys in github and bitbucket
+  ansible.builtin.pause:
+
+# Get the repos (submodule are automatically fetched)
+- name: Git clone liquidprompt
+  ansible.builtin.git: # noqa: latest
+    repo: git@github.com:nojhan/liquidprompt.git
+    dest: /home/nico/liquidprompt
+    accept_hostkey: true
+    key_file: $HOME/.ssh/id_rsa_nop
+  ignore_errors: true
+
+- name: Git clone perso
+  ansible.builtin.git: # noqa: latest
+    repo: git@github.com:nicolas-slamcore/{{ item }}.git
+    dest: /home/nico/{{ item }}
+    accept_hostkey: true
+    key_file: $HOME/.ssh/id_rsa_nop
+  with_items:
+    - scripts
+    - docker-perso
+    - dotfiles
+  ignore_errors: true
+
+- name: Install dotfiles
+  ansible.builtin.command:
+    chdir: /home/nico/dotfiles
+    cmd: ./scripts/install.sh
+
+# Broken ?
+- name: Install scripts
+  ansible.builtin.command:
+    chdir: /home/nico/scripts
+    cmd: ./install/install.sh

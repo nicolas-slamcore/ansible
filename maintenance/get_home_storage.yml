@@ -3,7 +3,7 @@
 
   tasks:
     - name: Get storage left
-      ansible.builtin.shell: df -h
+      ansible.builtin.shell: df -h|egrep 'Size|home'
       register: df
 
     - name: Printing results

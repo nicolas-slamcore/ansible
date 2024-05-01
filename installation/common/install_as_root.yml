@@ -21,40 +21,108 @@
       - dnsutils
       - iftop
       - plantuml
+      - tree
+      - terminator
+      - mplayer
+      - mplayer-gui
     state: latest
     update_cache: true
     cache_valid_time: 86400
 
-- name: Add Docker GPG apt Key
-  ansible.builtin.apt_key:
-    url: https://download.docker.com/linux/ubuntu/gpg
-    state: present
+## Install VSCode
+- name: Download and process Microsoft GPG key
+  ansible.builtin.get_url:
+    url: https://packages.microsoft.com/keys/microsoft.asc
+    dest: /tmp/microsoft.asc
+    mode: "0644"
 
-- name: Add Docker Repository
-  ansible.builtin.apt_repository:
-    repo: deb https://download.docker.com/linux/ubuntu focal stable
-    state: present
+- name: De-armor the GPG key
+  ansible.builtin.shell:
+    cmd: gpg --dearmor < /tmp/microsoft.asc > /tmp/packages.microsoft.gpg
+  args:
+    creates: /tmp/packages.microsoft.gpg
 
-- name: Update apt and install docker-ce
-  ansible.builtin.apt:
-    name:
-      - docker-ce
-      - docker-ce-cli
-      - containerd.io
-      - docker-compose-plugin
-      - docker-compose
+- name: Install GPG key to the system keyring directory
+  ansible.builtin.copy:
+    src: /tmp/packages.microsoft.gpg
+    dest: /etc/apt/keyrings/packages.microsoft.gpg
+    owner: root
+    group: root
+    mode: "0644"
+    remote_src: true
 
-    state: latest
-    update_cache: true
-    cache_valid_time: 86400
-
-- name: Add the user 'nico' in group  'docker'
-  ansible.builtin.user:
-    name: nico
-    group: docker
-
-- name: Create /home/buildbot
+- name: Remove temporary GPG key files
   ansible.builtin.file:
-    path: /home/buildbot
-    state: directory
-    mode: "0755"
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/microsoft.asc
+    - /tmp/packages.microsoft.gpg
+
+- name: Add VSCode repository
+  ansible.builtin.lineinfile:
+    path: /etc/apt/sources.list.d/vscode.list
+    create: true
+    line: "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main"
+    state: present
+    mode: "0644"
+
+# - name: Update apt cache
+#   ansible.builtin.apt:
+#     update_cache: true
+
+# - name: Install Visual Studio Code
+#   ansible.builtin.apt:
+#     name: code
+#     state: present
+# - name: Add Docker GPG apt Key
+#   ansible.builtin.apt_key:
+#     url: https://download.docker.com/linux/ubuntu/gpg
+#     state: present
+
+# - name: Add Docker Repository
+#   ansible.builtin.apt_repository:
+#     repo: deb https://download.docker.com/linux/ubuntu focal stable
+#     state: present
+
+# - name: Update apt and install docker-ce
+#   ansible.builtin.apt:
+#     name:
+#       - docker-ce
+#       - docker-ce-cli
+#       - containerd.io
+#       - docker-compose-plugin
+#       - docker-compose
+
+#     state: latest
+#     update_cache: true
+#     cache_valid_time: 86400
+
+# - name: Add the user 'nico' in group 'docker'
+#   ansible.builtin.user:
+#     name: nico
+#     group: docker
+
+
+- name: Add Tailscale's package signing key
+  ansible.builtin.get_url:
+    url: https://pkgs.tailscale.com/stable/ubuntu/focal.noarmor.gpg
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+    mode: '0644'
+
+- name: Add Tailscale repository
+  ansible.builtin.get_url:
+    url: https://pkgs.tailscale.com/stable/ubuntu/focal.tailscale-keyring.list
+    dest: /etc/apt/sources.list.d/tailscale.list
+    mode: '0644'
+
+- name: Update the package cache
+  ansible.builtin.apt:
+    update_cache: yes
+
+- name: Install Tailscale
+  ansible.builtin.apt:
+    name: tailscale
+    state: present
+
+

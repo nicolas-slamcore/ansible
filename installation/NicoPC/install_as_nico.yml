@@ -1,0 +1,40 @@
+---
+- name: Install NicoPC
+  hosts: NicoPC
+
+  vars_files:
+    - passphrase.yml
+
+  vars:
+    user_home: "{{ ansible_env.HOME }}"
+    desktop_files:
+      - albert.desktop
+      # - barrier.desktop # Doesn't work?
+      - syncthing-start.desktop
+
+  tasks:
+    - import_tasks: ../common/install_as_nico.yml
+
+    # - name: Ensure albert plugins directory exists
+    #   ansible.builtin.file:
+    #     path: ~/.local/share/albert/org.albert.extension.python/modules
+    #     state: directory
+    #     mode: '0755'
+
+    # - name: Clone Albert plugins repository # noqa latest[git]
+    #   ansible.builtin.git:
+    #     repo: 'https://github.com/bergercookie/awesome-albert-plugins.git'
+    #     dest: '~/.local/share/albert/org.albert.extension.python/modules'
+
+    - name: Ensure the autostart directory exists
+      ansible.builtin.file:
+        path: "{{ user_home }}/.config/autostart"
+        state: directory
+        mode: '0755'  # Adjust permissions as necessary
+
+    - name: Copy desktop files to autostart directory
+      ansible.builtin.copy:
+        src: "/usr/share/applications/{{ item }}"
+        dest: "{{ user_home }}/.config/autostart/{{ item }}"
+        mode: '0644'
+      loop: "{{ desktop_files }}"

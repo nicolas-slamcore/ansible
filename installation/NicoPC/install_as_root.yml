@@ -1,0 +1,177 @@
+---
+- name: Install NicoPC
+  hosts: NicoPC
+  become: true
+
+  handlers:
+    - name: Report package updates
+      ansible.builtin.debug:
+        msg: "Updated packages: {{ upgrade_output.stdout_lines }}"
+      listen: "package update"
+
+    - name: Report no updates
+      ansible.builtin.debug:
+        msg: "No packages were updated."
+      listen: "no package update"
+
+  vars:
+    anki_version: "24.04.1"
+    anki_tarball: "anki-{{ anki_version }}-linux-qt6.tar.zst"
+    download_url: "https://github.com/ankitects/anki/releases/download/{{ anki_version }}/{{ anki_tarball }}"
+
+  tasks:
+    - name: Import tasks
+      ansible.builtin.import_tasks: ../common/install_as_root.yml
+
+    - name: Ensure keyring directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Syncthing gpg key
+      ansible.builtin.apt_key:
+        url: https://syncthing.net/release-key.gpg
+        keyring: /etc/apt/keyrings/syncthing-archive-keyring.gpg
+        state: present
+
+    - name: Syncthing apt source
+      ansible.builtin.apt_repository:
+        repo: deb [signed-by=/etc/apt/keyrings/syncthing-archive-keyring.gpg] https://apt.syncthing.net/ syncthing stable
+        state: present
+        filename: syncthing
+
+    - name: Add Diodon Team PPA
+      ansible.builtin.apt_repository:
+        repo: ppa:diodon-team/stable
+        state: present
+        update_cache: true # Optionally update the cache after adding the repository
+        codename: jammy # To be removed...
+
+    - name: Add ckb-next PPA
+      ansible.builtin.apt_repository:
+        repo: ppa:tatokis/ckb-next
+        state: present
+        update_cache: true # Optionally update the cache after adding the repository
+        codename: jammy # To be removed...
+
+    - name: Download Brave Browser's GPG key
+      ansible.builtin.get_url:
+        url: https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
+        dest: /usr/share/keyrings/brave-browser-archive-keyring.gpg
+        mode: "0644"
+
+    - name: Add Brave Browser repository
+      ansible.builtin.apt_repository:
+        repo: deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main
+        state: present
+        filename: brave-browser-release
+
+    - name: Install the latest version of NicoPC packages
+      ansible.builtin.package:
+        name:
+          - pass
+          - libfuse2
+          - barrier
+          - openssl
+          - syncthing
+          - diodon
+          - ckb-next
+          - keychain
+          - brave-browser
+          - qt6-base-dev
+          - libqt6core5compat6
+          - qt6-svg-dev
+          - qt6-tools-dev
+          - pkg-config
+          - libxkbcommon-dev
+          - libarchive-dev
+          - libqalculate-dev
+          - python3-dev
+          - pybind11-dev
+          - qt6-scxml-dev
+          - libxcb-xinerama0
+          - libxcb-cursor0
+          - libnss3
+        state: present
+        update_cache: true
+        cache_valid_time: 86400
+
+    - name: Install from snap
+      community.general.snap:
+        name:
+          - shfmt
+          - slack
+          - telegram-desktop
+          - signal-desktop
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Upgrade all packages
+      ansible.builtin.apt:
+        upgrade: dist
+      register: upgrade_output
+      notify:
+        - "package update"
+        - "no package update"
+
+    - name: Trigger appropriate handler
+      ansible.builtin.meta: flush_handlers
+
+    - name: Clone Albert repository # noqa latest[git]
+      ansible.builtin.git:
+        repo: "https://github.com/albertlauncher/albert.git"
+        dest: "/tmp/albert"
+        recursive: true
+        force: true
+
+    - name: Configure the project using CMake
+      ansible.builtin.command:
+        chdir: "/tmp/albert"
+        cmd: "cmake -B build -S . -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug"
+      args:
+        creates: /tmp/albert/build/CMakeCache.txt
+
+    - name: Build the project using cmake
+      ansible.builtin.command:
+        chdir: "/tmp/albert"
+        cmd: "cmake --build build"
+      # Assuming you have a way to check for a build artifact to set changed_when
+      register: cmake_build
+      changed_when: "'Building CXX object' in cmake_build.stdout"
+
+    - name: Install the project
+      ansible.builtin.command:
+        chdir: "/tmp/albert"
+        cmd: "cmake --install build"
+      # Use creates or a similar condition to determine if the install should run
+      args:
+        creates: /usr/bin/albert
+
+    # - name: Download Vikunja
+    #   ansible.builtin.get_url:
+    #     url: https://dl.vikunja.io/desktop/0.23.0/Vikunja%20Desktop-v0.23.0.deb
+    #     dest: /tmp/vikunja.deb
+    #     mode: '0700'
+
+    # - name: Install Vikunja
+    #   ansible.builtin.apt:
+    #     deb: /tmp/vikunja.deb
+    - name: Download Anki tarball
+      ansible.builtin.get_url:
+        url: "{{ download_url }}"
+        dest: "/tmp/{{ anki_tarball }}"
+        mode: "0700"
+
+    - name: Extract Anki tarball # noqa
+      ansible.builtin.shell:
+        cmd: "tar -xaf /tmp/{{ anki_tarball }} -C /tmp"
+        creates: "/tmp/anki-{{ anki_version }}-linux-qt6"
+
+    - name: Run Anki install script
+      ansible.builtin.command:
+        argv:
+          - "/tmp/anki-{{ anki_version }}-linux-qt6/install.sh"
+        chdir: "/tmp/anki-{{ anki_version }}-linux-qt6"

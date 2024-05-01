@@ -1,0 +1,42 @@
+- name: Ansible restart master
+  hosts: buildbot
+  become: true
+  become_user: buildbot
+
+  tasks:
+    - name: Ensure the Git repository is up to date using SSH
+      ansible.builtin.git:
+        repo: "git@github.com:slamcore/buildbot.git"
+        dest: /home/buildbot/buildbot/master
+        version: origin/master
+        key_file: /home/buildbot/.ssh/id_ed25519_github
+        force: true
+      register: git_ops
+
+    - name: Merge changes from origin/master if needed
+      ansible.builtin.command:
+        cmd: git merge --ff-only origin/master
+        chdir: /home/buildbot/buildbot/master
+      when: git_ops.after != git_ops.before
+      failed_when: "'Already up to date.' not in merge_ops.stdout and merge_ops.rc != 0"
+      register: merge_ops
+
+    - name: Read PID from file
+      ansible.builtin.slurp:
+        src: /home/buildbot/buildbot/master/twistd.pid
+      register: pidfile
+      ignore_errors: true
+      when: git_ops.after != git_ops.before
+
+    - name: Kill the process if PID is available
+      ansible.builtin.command:
+        cmd: "kill -9 {{ pidfile['content'] | b64decode }}"
+      when: pidfile is not failed and git_ops.after != git_ops.before
+
+    - name: Restart buildbot
+      ansible.builtin.command:
+        cmd: buildbot restart .
+        chdir: /home/buildbot/buildbot/master
+      environment:
+        PATH: "{{ ansible_env.PATH }}:/home/buildbot/buildbot/buildbot_venv/bin/"
+      when: git_ops.after != git_ops.before
