@@ -1,0 +1,101 @@
+---
+- name: Install laptop
+  hosts: laptop
+
+  vars_files:
+    - passphrase.yml
+
+  vars:
+    user_home: "{{ ansible_env.HOME }}"
+    desktop_files:
+      - albert.desktop
+      # - barrier.desktop # Doesn't work?
+      - syncthing-start.desktop
+
+  tasks:
+    - import_tasks: ../common/install_as_nico.yml
+
+    # - name: Ensure albert plugins directory exists
+    #   ansible.builtin.file:
+    #     path: ~/.local/share/albert/org.albert.extension.python/modules
+    #     state: directory
+    #     mode: '0755'
+
+    # - name: Clone Albert plugins repository # noqa latest[git]
+    #   ansible.builtin.git:
+    #     repo: 'https://github.com/bergercookie/awesome-albert-plugins.git'
+    #     dest: '~/.local/share/albert/org.albert.extension.python/modules'
+
+    - name: Ensure the autostart directory exists
+      ansible.builtin.file:
+        path: "{{ user_home }}/.config/autostart"
+        state: directory
+        mode: '0755'  # Adjust permissions as necessary
+
+    - name: Copy desktop files to autostart directory
+      ansible.builtin.copy:
+        src: "/usr/share/applications/{{ item }}"
+        dest: "{{ user_home }}/.config/autostart/{{ item }}"
+        mode: '0644'
+      loop: "{{ desktop_files }}"
+
+    - name: Get passphrase
+      shell: echo $PASSPHRASE
+      environment:
+        PASSPHRASE: "{{ ssh_key_passphrase }}"
+      register: get_passphrase
+
+    - name: Generate an OpenSSH keypair with the default values (4096 bits, rsa) and encrypted private key
+      community.crypto.openssh_keypair:
+        path: $HOME/.ssh/id_rsa_test
+        passphrase: "{{ get_passphrase.stdout }}"
+      register: perm_public_key
+
+    - name: Report perm public_key
+      ansible.builtin.debug:
+        msg: "permanent public key is {{ perm_public_key.public_key }}"
+
+    - import_tasks: ../common/install_as_nico.yml
+
+    - name: Create a directory if it does not exist
+      ansible.builtin.file:
+        path: $HOME/{{ item }}
+        state: directory
+      with_items:
+        - software
+        - data
+        - datasets
+        - tests
+        - output
+        - Learning
+        - .ssh
+
+    # Get the repos (submodule are automatically fetched)
+    - name: git clone {{ item }}
+      ansible.builtin.git:
+        repo: git@bitbucket.org:slamcore/{{ item }}.git
+        dest: /home/nico/software/{{ item }}
+        accept_hostkey: true
+        key_file: $HOME/.ssh/id_rsa_nop
+      with_items:
+        - acceptance_tests
+        - slam_utils
+        - online_poc
+        - buildbot
+      ignore_errors: true
+
+    - name: git clone {{ item }}
+      ansible.builtin.git:
+        repo: git@github.com:slamcore/{{ item }}.git
+        dest: /home/nico/software/{{ item }}
+        accept_hostkey: true
+        key_file: $HOME/.ssh/id_rsa_nop
+      with_items:
+        - position
+        - slamtor
+        - trajectory_evaluator
+        - slamcore_packager
+      ignore_errors: true
+
+    - name: Pause until you have removed the keys in github and bitbucket
+      ansible.builtin.pause:

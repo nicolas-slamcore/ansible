@@ -1,71 +1,97 @@
-- name: Install the latest version of common packages
-  ansible.builtin.package:
-    name:
-      - git
-      - build-essential
-      - tmux
-      - neovim
-      - htop
-      - cowsay
-      - fortune
-      - cmake
-      - cmake-curses-gui
-      - apt-transport-https
-      - ca-certificates
-      - curl
-      - software-properties-common
-      - syncthing
-      - locate
-      - silversearcher-ag
-      - net-tools
-      - dnsutils
-      - iftop
-      - plantuml
-      - tree
-      - terminator
-      - mplayer
-      - mplayer-gui
-    state: latest
-    update_cache: true
-    cache_valid_time: 86400
+# - name: Install the latest version of common packages
+#   ansible.builtin.package:
+#     name:
+#       - git
+#       - build-essential
+#       - tmux
+#       - neovim
+#       - htop
+#       - cowsay
+#       - fortune
+#       - cmake
+#       - cmake-curses-gui
+#       - apt-transport-https
+#       - ca-certificates
+#       - curl
+#       - software-properties-common
+#       - syncthing
+#       - locate
+#       - silversearcher-ag
+#       - net-tools
+#       - dnsutils
+#       - iftop
+#       - plantuml
+#       - tree
+#       - terminator
+#       - mplayer
+#       - mplayer-gui
+#       - gnupg
+#     state: latest
+#     update_cache: true
+#     cache_valid_time: 86400
 
-## Install VSCode
-- name: Download and process Microsoft GPG key
-  ansible.builtin.get_url:
-    url: https://packages.microsoft.com/keys/microsoft.asc
-    dest: /tmp/microsoft.asc
-    mode: "0644"
+# ## Install VSCode
+# - name: Download and process Microsoft GPG key
+#   ansible.builtin.get_url:
+#     url: https://packages.microsoft.com/keys/microsoft.asc
+#     dest: /tmp/microsoft.asc
+#     mode: "0644"
 
-- name: De-armor the GPG key
-  ansible.builtin.shell:
-    cmd: gpg --dearmor < /tmp/microsoft.asc > /tmp/packages.microsoft.gpg
-  args:
-    creates: /tmp/packages.microsoft.gpg
+# - name: De-armor the GPG key with debugging
+#   ansible.builtin.command:
+#     cmd: "gpg --dearmor -o /tmp/packages.microsoft.gpg /tmp/microsoft.asc"
+#   register: gpg_command_result
+#   ignore_errors: yes
 
-- name: Install GPG key to the system keyring directory
-  ansible.builtin.copy:
-    src: /tmp/packages.microsoft.gpg
-    dest: /etc/apt/keyrings/packages.microsoft.gpg
-    owner: root
-    group: root
-    mode: "0644"
-    remote_src: true
+# - name: Debug GPG command result
+#   ansible.builtin.debug:
+#     var: gpg_command_result
 
-- name: Remove temporary GPG key files
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - /tmp/microsoft.asc
-    - /tmp/packages.microsoft.gpg
+# - name: Check if the GPG file was created
+#   ansible.builtin.stat:
+#     path: /tmp/packages.microsoft.gpg
+#   register: gpg_file_status
 
-- name: Add VSCode repository
-  ansible.builtin.lineinfile:
-    path: /etc/apt/sources.list.d/vscode.list
-    create: true
-    line: "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main"
-    state: present
-    mode: "0644"
+# - name: Debug file status
+#   ansible.builtin.debug:
+#     var: gpg_file_status
+
+# - name: Check /tmp directory permissions
+#   ansible.builtin.command:
+#     cmd: ls -ld /tmp
+#   register: tmp_permissions
+
+# - name: Debug /tmp permissions
+#   ansible.builtin.debug:
+#     var: tmp_permissions.stdout
+
+# - name: Install GPG key to the system keyring directory
+#   ansible.builtin.copy:
+#     src: /tmp/packages.microsoft.gpg
+#     dest: /etc/apt/keyrings/packages.microsoft.gpg
+#     owner: root
+#     group: root
+#     mode: "0644"
+#     remote_src: true
+#   tags:
+#   - install
+
+
+# - name: Remove temporary GPG key files
+#   ansible.builtin.file:
+#     path: "{{ item }}"
+#     state: absent
+#   loop:
+#     - /tmp/microsoft.asc
+#     - /tmp/packages.microsoft.gpg
+
+# - name: Add VSCode repository
+#   ansible.builtin.lineinfile:
+#     path: /etc/apt/sources.list.d/vscode.list
+#     create: true
+#     line: "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main"
+#     state: present
+#     mode: "0644"
 
 # - name: Update apt cache
 #   ansible.builtin.apt:
@@ -80,39 +106,56 @@
 #     url: https://download.docker.com/linux/ubuntu/gpg
 #     state: present
 
-# - name: Add Docker Repository
-#   ansible.builtin.apt_repository:
-#     repo: deb https://download.docker.com/linux/ubuntu focal stable
-#     state: present
+- name: Ensure /etc/apt/keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
 
-# - name: Update apt and install docker-ce
-#   ansible.builtin.apt:
-#     name:
-#       - docker-ce
-#       - docker-ce-cli
-#       - containerd.io
-#       - docker-compose-plugin
-#       - docker-compose
+- name: Download Docker GPG Key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.gpg
+    mode: "0644"
 
-#     state: latest
-#     update_cache: true
-#     cache_valid_time: 86400
+- name: Add Docker Repository
+  ansible.builtin.apt_repository:
+    repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    state: present
 
-# - name: Add the user 'nico' in group 'docker'
-#   ansible.builtin.user:
-#     name: nico
-#     group: docker
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: yes
+
+
+- name: Update apt and install docker-ce
+  ansible.builtin.apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+      - docker-compose
+
+    state: latest
+    update_cache: true
+    cache_valid_time: 86400
+
+- name: Add the user 'nico' in group 'docker'
+  ansible.builtin.user:
+    name: nico
+    group: docker
 
 
 - name: Add Tailscale's package signing key
   ansible.builtin.get_url:
-    url: https://pkgs.tailscale.com/stable/ubuntu/focal.noarmor.gpg
+    url: https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg # Change distro
     dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
     mode: '0644'
 
 - name: Add Tailscale repository
   ansible.builtin.get_url:
-    url: https://pkgs.tailscale.com/stable/ubuntu/focal.tailscale-keyring.list
+    url: https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list # Change distro
     dest: /etc/apt/sources.list.d/tailscale.list
     mode: '0644'
 
@@ -124,5 +167,8 @@
   ansible.builtin.apt:
     name: tailscale
     state: present
+  tags:
+  - install
+
 
 
