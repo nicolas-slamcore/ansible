@@ -1,0 +1,8 @@
+---
+- name: Check connectivity to all devices
+  hosts: aware_devices
+  gather_facts: false
+
+  tasks:
+    - name: Ping hosts to ensure they are reachable
+      ansible.builtin.ping:

@@ -1,0 +1,39 @@
+---
+- name: Deploy Development CA Certificate
+  hosts: aware_devices
+  become: true
+
+  tasks:
+    - name: Check if the production certificate exists before backing it up
+      ansible.builtin.stat:
+        path: /etc/slamcore/config/ca.cert.pem
+      register: prod_cert_stat
+
+    - name: Back up the current production certificate
+      ansible.builtin.copy:
+        src: /etc/slamcore/config/ca.cert.pem
+        dest: /etc/slamcore/config/ca.cert.pem.prod
+        remote_src: true # Important: tells Ansible the source is on the remote machine
+        owner: root
+        group: root
+        mode: '0644'
+      when: prod_cert_stat.stat.exists
+
+    - name: Deploy the new development CA certificate
+      ansible.builtin.copy:
+        src: ca.cert.pem.dev # Copies the local file from the same directory as the playbook
+        dest: /etc/slamcore/config/ca.cert.pem
+        owner: root
+        group: root
+        mode: '0644'
+
+
+    - name: Back up the new production certificate
+      ansible.builtin.copy:
+        src: /etc/slamcore/config/ca.cert.pem
+        dest: /etc/slamcore/config/ca.cert.pem.dev
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0644'
+      when: prod_cert_stat.stat.exists
