@@ -1,0 +1,61 @@
+- name: Deploy RAUC update to aware devices
+  hosts: aware_devices
+  become: true
+
+  vars:
+    # Define the update file version
+    update_version: "25.08.35"
+    # The 'hw_version' variable is expected from the inventory
+    update_source_path: "~/packages/jetson_flash/{{ hw_version }}/aware_update_{{ update_version }}.raucb"
+    # Define the destination directory on the target
+    update_dest_dir: "/home/slamcore/update"
+
+  tasks:
+    - name: Ensure update directory exists on target
+      ansible.builtin.file:
+        path: "{{ update_dest_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy update file to target
+      ansible.builtin.copy:
+        src: "{{ update_source_path }}"
+        dest: "{{ update_dest_dir }}/aware_update_{{ update_version }}.raucb"
+        mode: "0644"
+
+    - name: Install RAUC update
+      ansible.builtin.command:
+        cmd: "rauc install {{ update_dest_dir }}/aware_update_{{ update_version }}.raucb"
+      register: rauc_install_result
+      changed_when: "'Installing done' in rauc_install_result.stdout"
+
+    - name: Reboot the machine after update
+      ansible.builtin.reboot:
+        msg: "Rebooting after RAUC update"
+        connect_timeout: 5
+        reboot_timeout: 600
+        pre_reboot_delay: 0
+        post_reboot_delay: 30
+        test_command: whoami
+      when: rauc_install_result.changed
+
+    - name: Remove update file from target
+      ansible.builtin.file:
+        path: "{{ update_dest_dir }}/aware_update_{{ update_version }}.raucb"
+        state: absent
+      when: rauc_install_result.changed
+
+    - name: Get installed version from target
+      ansible.builtin.command:
+        cmd: cat /etc/slamcore/jetson_flash_rev.txt
+      register: installed_version_result
+      changed_when: false
+      when: rauc_install_result.changed
+
+    - name: Verify the installed version
+      ansible.builtin.assert:
+        that:
+          - installed_version_result.stdout.startswith('v' + update_version)
+        fail_msg: "Update verification failed. Expected version starting with 'v{{ update_version }}', but found '{{ installed_version_result.stdout }}'."
+        success_msg: "Update to version '{{ update_version }}' verified successfully."
+      when: rauc_install_result.changed

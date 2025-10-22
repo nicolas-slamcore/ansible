@@ -1,0 +1,12 @@
+- name: Install on Buildbot
+  hosts: buildbots
+  become: true
+
+  tasks:
+    - name: Install the latest version of package
+      ansible.builtin.package:
+        name:
+          - cmake
+        state: latest
+        update_cache: true
+        cache_valid_time: 86400

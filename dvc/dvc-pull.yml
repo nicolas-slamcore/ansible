@@ -1,0 +1,23 @@
+- name: Ansible pull datasets with DVC
+  hosts: buildbots
+  become: true
+  become_user: buildbot
+
+  tasks:
+
+    # Install DVC in a dedicated venv
+    - name: python package
+      pip:
+        requirements: /home/buildbot/datasets/requirements.txt
+        virtualenv_command: python3 -m venv .venv
+        virtualenv: /home/buildbot/datasets/.venv
+
+    # Check the version files
+    - name: Pull datasets with DVC
+      ansible.builtin.command:
+        chdir: /home/buildbot/datasets
+        cmd: .venv/bin/dvc pull
+      register: result
+
+    - ansible.builtin.debug:
+        msg: "{{ result }}"
