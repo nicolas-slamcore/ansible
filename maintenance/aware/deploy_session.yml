@@ -1,0 +1,37 @@
+---
+- name: Deploy session file to aware devices
+  hosts: aware_devices
+  become: true
+
+  vars:
+    session_file_name: full-DHL8_241125_1501.session
+    source_file: /home/nico/data/{{ session_file_name }}
+    target_dir: /home/slamcore/data/sessions/25.8.36
+    target_file: "{{ target_dir }}/{{ session_file_name }}"
+
+  tasks:
+    - name: Create target directory if it doesn't exist
+      ansible.builtin.file:
+        path: "{{ target_dir }}"
+        state: directory
+        owner: slamcore
+        group: slamcore
+        mode: '0755'
+
+    - name: Deploy session file to aware devices
+      ansible.builtin.copy:
+        src: "{{ source_file }}"
+        dest: "{{ target_file }}"
+        owner: slamcore
+        group: slamcore
+        mode: '0644'
+
+    - name: Verify file was deployed successfully
+      ansible.builtin.stat:
+        path: "{{ target_file }}"
+      register: deployed_file
+
+    - name: Display deployment status
+      ansible.builtin.debug:
+        msg: "Session file successfully deployed to {{ inventory_hostname }}:{{ target_file }}"
+      when: deployed_file.stat.exists

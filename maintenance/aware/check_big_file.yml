@@ -1,0 +1,48 @@
+---
+- name: Configure large-file Slack monitor
+  hosts: aware_devices
+  become: true
+  gather_facts: true
+
+  vars:
+    monitor_script_path: /usr/local/sbin/check_large_files.py
+
+  tasks:
+    - name: Ensure cron package is present
+      ansible.builtin.package:
+        name: cron
+        state: present
+
+    - name: Ensure /usr/local/sbin exists
+      ansible.builtin.file:
+        path: /usr/local/sbin
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Deploy large-file monitoring script
+      ansible.builtin.template:
+        src: templates/check_large_files.py.j2
+        dest: "{{ monitor_script_path }}"
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Install cron job for large-file monitor
+      ansible.builtin.cron:
+        name: "Check for large files and alert Slack"
+        user: root
+        job: "{{ monitor_script_path }}"
+        minute: "0"
+
+    - name: Run large-file monitor immediately
+      ansible.builtin.command: "{{ monitor_script_path }}"
+      register: monitor_run
+      changed_when: false
+      failed_when: monitor_run.rc not in [0, 1]
+
+    - name: Show immediate run output
+      ansible.builtin.debug:
+        msg: "{{ monitor_run.stdout }}"
+      when: monitor_run.stdout | length > 0

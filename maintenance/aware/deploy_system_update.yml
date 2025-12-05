@@ -4,7 +4,7 @@
 
   vars:
     # Define the update file version
-    update_version: "25.08.35"
+    update_version: "25.08.47"
     # The 'hw_version' variable is expected from the inventory
     update_source_path: "~/packages/jetson_flash/{{ hw_version }}/aware_update_{{ update_version }}.raucb"
     # Define the destination directory on the target

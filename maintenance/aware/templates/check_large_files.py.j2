@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+import os
+import json
+import socket
+import subprocess
+import sys
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
+
+# Slack configuration
+SLACK_CHANNEL = "{{ slack_bigfile_channel_id }}"
+SLACK_TOKEN = "{{ slack_bigfile_bot_token }}"
+
+# Find command configuration
+SIZE_FILTER = "+700M"
+FIND_CMD = ["find", "/", "-type", "f", "-size", SIZE_FILTER, "-print"]
+
+# Directories to ignore
+IGNORE_PREFIXES = [
+    "/home/slamcore/mnt/",  # mounted network drives
+    "/home/slamcore/data/",  # data storage
+]
+
+UNITS = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+
+
+def log(message: str) -> None:
+    """Log message to stdout (but only if running interactively)."""
+    if sys.stdout.isatty():
+        print(message)
+
+
+def humanize(bytes_val: int) -> str:
+    """Convert bytes to human-readable format."""
+    size = float(bytes_val)
+    for unit in UNITS:
+        if size < 1024 or unit == UNITS[-1]:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{bytes_val} B"
+
+
+def main() -> int:
+    if not SLACK_CHANNEL or not SLACK_TOKEN:
+        log("Slack configuration missing; exiting.")
+        return 0
+
+    log(f"Running command: {' '.join(FIND_CMD)}")
+    try:
+        result = subprocess.run(FIND_CMD, check=False, capture_output=True, text=True)
+    # subprocess.run() raises FileNotFoundError when the executable in FIND_CMD[0] does not exist.
+    except FileNotFoundError:
+        log("find command not available on this system.")
+        return 0
+
+    # Example output line: "734003200 /path/to/largefile"
+    output = result.stdout.strip()
+    if not output:
+        log(f"No files larger than {SIZE_FILTER[1:]} found.")
+        return 0
+
+    entries_full = []
+    skipped = 0
+    for path in output.splitlines():
+        path = path.strip()
+        if not path:
+            continue
+
+        # Ignore certain directories early
+        path_lower = path.lower()
+        if any(path_lower.startswith(prefix) for prefix in IGNORE_PREFIXES):
+            skipped += 1
+            continue
+
+        # We must stat each file
+        try:
+            size_val = os.path.getsize(path)
+        except OSError:
+            # Could be permission error, broken symlink, race condition, etc.
+            continue
+
+        entries_full.append((size_val, path))
+
+    if skipped:
+        log(f"Ignored {skipped} entries in allowed directories.")
+
+    if not entries_full:
+        log("No parsable results found.")
+        return 0
+
+    # Limit to first 20 entries to avoid spamming Slack
+    # If there is more than 20, we will have to look into it anyway
+    entries = entries_full[:20]
+    log(f"Found {len(entries_full)} large files; showing first {len(entries)}.")
+
+    formatted = [f"{humanize(size)} {path}" for size, path in entries]
+    hostname = socket.gethostname() # Get the hostname of the current target
+    text = f"*Large files detected on `{hostname}`* (>{SIZE_FILTER[1:]} )"
+
+    # Prepare Slack payload
+    payload = {
+        "channel": SLACK_CHANNEL,
+        "text": text,
+        "blocks": [
+            {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "```\n" + "\n".join(formatted) + "\n```",
+                },
+            },
+        ],
+    }
+
+    # Prepare HTTP request for Slack API
+    request = Request(
+        "https://slack.com/api/chat.postMessage",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {SLACK_TOKEN}",
+        },
+    )
+
+    # Send the HTTP request to Slack
+    log("Sending alert to Slack.")
+    try:
+        with urlopen(request, timeout=10) as response:
+            body = json.loads(response.read().decode())
+            if not body.get("ok", False):
+                log(f"Slack API error: {body}")
+                return 1
+    except (HTTPError, URLError, json.JSONDecodeError) as exc:
+        log(f"Failed to notify Slack: {exc}")
+        return 1
+
+    log("Slack notification sent successfully.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
