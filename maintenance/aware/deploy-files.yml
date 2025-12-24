@@ -1,0 +1,40 @@
+---
+- name: Deploy files to aware devices
+  hosts: aware_buildbot
+  gather_facts: false
+  vars:
+    source_file: "~/data/full-DHL8_241125_1501.session"
+    destination_path: "~/data/sessions/25.8.36"
+    file_owner: "{{ file_owner | default('slamcore') }}"
+    file_group: "{{ file_group | default('slamcore') }}"
+    file_mode: "{{ file_mode | default('0644') }}"
+
+  tasks:
+    - name: Ensure destination directory exists
+      file:
+        path: "{{ destination_path | dirname }}"
+        state: directory
+        owner: "{{ file_owner }}"
+        group: "{{ file_group }}"
+        mode: '0755'
+      become: true
+
+    - name: Copy file to target devices
+      copy:
+        src: "{{ source_file }}"
+        dest: "{{ destination_path }}"
+        owner: "{{ file_owner }}"
+        group: "{{ file_group }}"
+        mode: "{{ file_mode }}"
+        backup: true
+      become: true
+
+    - name: Verify file was deployed
+      stat:
+        path: "{{ destination_path }}"
+      register: deployed_file
+
+    - name: Show deployment result
+      debug:
+        msg: "File successfully deployed to {{ destination_path }} on {{ inventory_hostname }}"
+      when: deployed_file.stat.exists
