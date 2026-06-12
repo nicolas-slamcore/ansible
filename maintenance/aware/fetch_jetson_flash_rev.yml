@@ -1,0 +1,15 @@
+---
+- name: Fetch and print jetson_flash_rev.txt from aware devices
+  hosts: exploratory_testing
+  become: true
+
+  tasks:
+    - name: Fetch jetson_flash_rev.txt content
+      ansible.builtin.command:
+        cmd: cat /etc/slamcore/jetson_flash_rev.txt
+      register: jetson_flash_rev_result
+      changed_when: false
+
+    - name: Print jetson_flash_rev.txt content
+      ansible.builtin.debug:
+        msg: "jetson_flash_rev.txt on {{ inventory_hostname }}: {{ jetson_flash_rev_result.stdout }}"

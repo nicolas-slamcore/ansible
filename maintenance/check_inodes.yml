@@ -1,0 +1,24 @@
+---
+- name: Check inode usage on devices
+  hosts: aware_devices
+  gather_facts: no
+  tasks:
+    - name: Get inode usage information
+      shell: df -i
+      register: inode_info
+      changed_when: false
+
+    - name: Display host header
+      debug:
+        msg:
+          - "================================================================================"
+          - "Host: {{ inventory_hostname }}"
+          - "================================================================================"
+
+    - name: Display inode usage
+      debug:
+        var: inode_info.stdout_lines
+
+    - name: Display footer
+      debug:
+        msg: "================================================================================"

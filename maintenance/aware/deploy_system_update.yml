@@ -1,10 +1,58 @@
+# Configuration: Set these variables to customize the deployment
+# deploy_target: "hub-3-aware" or "exploratory_testing" or "aware_devices"
+# update_version: e.g., "26.01.22"
+
+- name: Download jetson-flash packages from buildbot
+  hosts: localhost
+  connection: local
+  become: false
+
+  vars:
+    deploy_target: "custom_aware"  # Change this to target different device groups
+    update_version: "26.04.14"     # Change this to update to a different version
+    base_url: "http://buildbot.slamcore.local/archives/jetson-flash/{{ update_version }}/aarch64/current"
+    download_dir: "{{ ansible_env.HOME }}/packages/jetson_flash"
+    hw_variants:
+      - mk2
+      - mk3
+
+  tasks:
+    - name: Create download directories for each hardware variant
+      ansible.builtin.file:
+        path: "{{ download_dir }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: "{{ hw_variants }}"
+
+    - name: Check whether jetson-flash packages already exist locally
+      ansible.builtin.stat:
+        path: "{{ download_dir }}/{{ item }}/jetson-flash_rauc_{{ item }}-r36_aarch64_{{ update_version }}.tbz2"
+      loop: "{{ hw_variants }}"
+      register: jetson_flash_pkg_stat
+
+    - name: Download jetson-flash packages (only if missing)
+      ansible.builtin.get_url:
+        url: "{{ base_url }}/jetson-flash_rauc_{{ item.item }}-r36_aarch64_{{ update_version }}.tbz2"
+        dest: "{{ download_dir }}/{{ item.item }}/jetson-flash_rauc_{{ item.item }}-r36_aarch64_{{ update_version }}.tbz2"
+        mode: "0644"
+      loop: "{{ jetson_flash_pkg_stat.results }}"
+      when: not item.stat.exists
+
+    - name: Extract jetson-flash packages
+      ansible.builtin.unarchive:
+        src: "{{ download_dir }}/{{ item }}/jetson-flash_rauc_{{ item }}-r36_aarch64_{{ update_version }}.tbz2"
+        dest: "{{ download_dir }}/{{ item }}/"
+        remote_src: true
+        creates: "{{ download_dir }}/{{ item }}/aware_update_{{ update_version }}.raucb"
+      loop: "{{ hw_variants }}"
+
 - name: Deploy RAUC update to aware devices
-  hosts: aware_devices
+  hosts: "{{ deploy_target | default('hub-3-aware') }}"
   become: true
 
   vars:
-    # Define the update file version
-    update_version: "25.09.21"
+    deploy_target: "custom_aware"  # Change this to target different device groups
+    update_version: "26.04.14"     # Must match the version downloaded above
     # The 'hw_version' variable is expected from the inventory
     update_source_path: "~/packages/jetson_flash/{{ hw_version }}/aware_update_{{ update_version }}.raucb"
     # Define the destination directory on the target
@@ -17,15 +65,21 @@
         state: directory
         mode: "0755"
 
-    - name: Copy update file to target
+    - name: Check whether update file already exists on target
+      ansible.builtin.stat:
+        path: "{{ update_dest_dir }}/aware_update_{{ update_version }}_{{ hw_version }}.raucb"
+      register: target_update_file_stat
+
+    - name: Copy update file to target (only if missing)
       ansible.builtin.copy:
         src: "{{ update_source_path }}"
-        dest: "{{ update_dest_dir }}/aware_update_{{ update_version }}.raucb"
+        dest: "{{ update_dest_dir }}/aware_update_{{ update_version }}_{{ hw_version }}.raucb"
         mode: "0644"
+      when: not target_update_file_stat.stat.exists
 
     - name: Install RAUC update
       ansible.builtin.command:
-        cmd: "rauc install {{ update_dest_dir }}/aware_update_{{ update_version }}.raucb"
+        cmd: "rauc install {{ update_dest_dir }}/aware_update_{{ update_version }}_{{ hw_version }}.raucb"
       register: rauc_install_result
       changed_when: "'Installing done' in rauc_install_result.stdout"
 

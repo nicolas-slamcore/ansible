@@ -1,0 +1,1 @@
+/home/nico/software/jetson_flash/scripts/password_from_mac.sh

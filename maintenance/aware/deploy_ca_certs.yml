@@ -1,0 +1,82 @@
+- name: Deploy CA certificates and select active variant
+  hosts: "{{ deploy_target | default('custom_aware') }}"
+  become: true
+
+  vars:
+    deploy_target: "custom_aware"          # Override with -e deploy_target=...
+    cert_variant: "dev"                     # 'dev' or 'prod' — override with -e cert_variant=prod
+    target_cert_dir: /etc/slamcore/config
+    keys_root: "{{ lookup('ansible.builtin.env', 'HOME') }}/software/jetson_flash/keys"
+    dev_src: "{{ keys_root }}/development/ca.cert.pem"
+    prod_src: "{{ keys_root }}/release/ca.cert.pem"
+
+  tasks:
+    - name: Validate cert_variant
+      ansible.builtin.assert:
+        that:
+          - cert_variant in ['dev', 'prod']
+        fail_msg: "cert_variant must be 'dev' or 'prod', got '{{ cert_variant }}'"
+
+    - name: Ensure target certificate directory exists
+      ansible.builtin.file:
+        path: "{{ target_cert_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy development CA certificate
+      ansible.builtin.copy:
+        src: "{{ dev_src }}"
+        dest: "{{ target_cert_dir }}/ca.cert.pem.dev"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Copy production CA certificate
+      ansible.builtin.copy:
+        src: "{{ prod_src }}"
+        dest: "{{ target_cert_dir }}/ca.cert.pem.prod"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Symlink active CA certificate to selected variant
+      ansible.builtin.file:
+        src: "{{ target_cert_dir }}/ca.cert.pem.{{ cert_variant }}"
+        dest: "{{ target_cert_dir }}/ca.cert.pem"
+        state: link
+        force: true
+
+    # Verification: prove the active cert resolves to the selected variant both
+    # by symlink name and by certificate fingerprint. Skipped under --check
+    # since no real change has been applied to read back.
+    - name: Verify active CA certificate
+      when: not ansible_check_mode
+      block:
+        - name: Read back active symlink target
+          ansible.builtin.command:
+            cmd: "readlink -f {{ target_cert_dir }}/ca.cert.pem"
+          register: active_cert_path
+          changed_when: false
+
+        - name: Fingerprint the active CA certificate
+          ansible.builtin.command:
+            cmd: "openssl x509 -noout -fingerprint -sha256 -in {{ target_cert_dir }}/ca.cert.pem"
+          register: active_cert_fp
+          changed_when: false
+
+        - name: Fingerprint the selected variant certificate
+          ansible.builtin.command:
+            cmd: "openssl x509 -noout -fingerprint -sha256 -in {{ target_cert_dir }}/ca.cert.pem.{{ cert_variant }}"
+          register: variant_cert_fp
+          changed_when: false
+
+        - name: Confirm active variant
+          ansible.builtin.assert:
+            that:
+              - active_cert_path.stdout.endswith('ca.cert.pem.' + cert_variant)
+              - active_cert_fp.stdout == variant_cert_fp.stdout
+            fail_msg: >-
+              Active CA mismatch: symlink resolves to '{{ active_cert_path.stdout }}'
+              and fingerprint '{{ active_cert_fp.stdout }}' does not match the
+              {{ cert_variant }} certificate.
+            success_msg: "Active CA is now the {{ cert_variant }} certificate ({{ active_cert_fp.stdout }})"

@@ -1,0 +1,865 @@
+#!/usr/bin/env -S uv run --script  # noqa: EXE003
+# /// script
+# requires-python = ">=3.10"
+# dependencies = [
+#     "filelock",
+#     "httpx",
+#     "packaging",
+#     "rich",
+#     "typer",
+# ]
+# ///
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Annotated, Optional
+
+import httpx
+import typer
+from filelock import FileLock
+from packaging.version import Version
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskID,
+    TextColumn,
+    TimeElapsedColumn,
+)
+from rich.table import Table
+
+# ------------------------------------------------------------------
+# Known fleet hardware versions (seeded from aware.ini).
+# For devices not listed here, hw is resolved via local cache then SSH.
+# When SSH detection runs, the script suggests adding the entry here.
+# ------------------------------------------------------------------
+KNOWN_HW: dict[str, str] = {
+    "sc-aware-jpah0001": "mk2",
+    "sc-aware-jpb70015": "mk2",
+    "sc-aware-jpb70006": "mk2",
+    "sc-aware-jpcp0039": "mk2",
+    "sc-aware-jpcp0020": "mk2",
+    "sc-aware-jpb70028": "mk2",
+    "sc-aware-jpb70030": "mk2",
+    "sc-aware-jq2h0003": "mk2",
+    "sc-aware-jq2q0006": "mk2",
+    "sc-aware-jq2q0022": "mk2",
+    "sc-aware-jq840003": "mk2",
+    "sc-aware-jq6g0034": "mk2",
+    "sc-aware-jq3q0012": "mk2",
+    "sc-aware-jq840015": "mk3",
+    "sc-aware-jq840019": "mk3",
+    "sc-aware-jq9nb085": "mk3",
+}
+
+BUILDBOT_BASE = "http://buildbot.slamcore.local/archives/jetson-flash"
+CACHE_DIR = Path.home() / ".cache" / "aware-update"
+DEVICES_CACHE = CACHE_DIR / "devices.json"
+CHUNK_SIZE_DEFAULT = 4 * 1024 * 1024  # 4 MB
+POLL_INTERVAL = 10  # seconds
+POLL_TIMEOUT = 20 * 60  # 20 minutes total
+REBOOT_TIMEOUT = 20 * 60  # 20 minutes for the device to come back
+CHUNK_RETRIES = 3
+
+PASSWORD_FROM_MAC = (Path(__file__).parent / "password_from_mac.sh").resolve()
+DEVICE_VARIANT_FILE = "/etc/slamcore/default_device_variant"
+
+err = Console(file=sys.stderr)
+
+
+# ------------------------------------------------------------------
+# Types
+# ------------------------------------------------------------------
+
+
+@dataclass
+class DeviceResult:
+    host: str
+    ok: bool
+    version_before: str = ""
+    version_after: str = ""
+    error: str = ""
+    log_path: Path | None = None
+
+
+# ------------------------------------------------------------------
+# Stream A: Buildbot + cache
+# ------------------------------------------------------------------
+
+
+def list_buildbot_versions() -> list[str]:
+    """Return all available versions from the buildbot index, newest first.
+
+    :returns: Semver-sorted descending list of version strings.
+    :raises RuntimeError: If the index is unreachable or returns a non-200 status.
+
+    """
+    try:
+        response = httpx.get(f"{BUILDBOT_BASE}/", timeout=10)
+    except httpx.RequestError as exc:
+        raise RuntimeError(f"Could not reach buildbot index: {exc}") from exc
+    response.raise_for_status()
+    versions = re.findall(r'href="(\d+\.\d+[^"/]*)/?', response.text)
+    return sorted(set(versions), key=Version, reverse=True)
+
+
+def resolve_version(requested: str | None) -> str:
+    """Resolve a version string, or return the latest available from buildbot.
+
+    :param requested: Explicit version string, or ``None`` to auto-resolve.
+    :returns: The resolved version string.
+    :raises RuntimeError: If auto-resolution finds no versions.
+
+    """
+    if requested is not None:
+        return requested
+    versions = list_buildbot_versions()
+    if not versions:
+        raise RuntimeError(
+            f"No versions found on buildbot. Check that {BUILDBOT_BASE}/ is reachable."
+        )
+    return versions[0]
+
+
+def ensure_bundle(version: str, hw: str) -> Path:
+    """Return path to a cached .raucb bundle, downloading from buildbot on miss.
+
+    Concurrent calls for the same (version, hw) pair are serialised via
+    filelock so only one process pays the download cost.
+
+    :param version: Version string, e.g. ``"26.1.34"``.
+    :param hw: Hardware variant: ``"mk2"`` or ``"mk3"``.
+    :returns: Absolute path to the extracted ``.raucb`` file.
+    :raises RuntimeError: If the tarball has no .raucb member or download fails.
+
+    """
+    bundle_path = CACHE_DIR / "versions" / version / hw / f"aware_update_{version}.raucb"
+    if bundle_path.exists():
+        return bundle_path
+
+    lock_path = CACHE_DIR / ".locks" / f"{version}-{hw}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with FileLock(str(lock_path)):
+        # Re-check after acquiring the lock — a concurrent caller may have
+        # already populated the cache while we were waiting.
+        if bundle_path.exists():
+            return bundle_path
+
+        bundle_path.parent.mkdir(parents=True, exist_ok=True)
+        tarball_name = f"jetson-flash_rauc_{hw}-r36_aarch64_{version}.tbz2"
+        tarball_url = f"{BUILDBOT_BASE}/{version}/aarch64/current/{tarball_name}"
+        tarball_tmp = bundle_path.parent / tarball_name
+
+        try:
+            with httpx.stream(
+                "GET",
+                tarball_url,
+                timeout=httpx.Timeout(300, connect=15),
+                follow_redirects=True,
+            ) as resp:
+                resp.raise_for_status()
+                with tarball_tmp.open("wb") as fh:
+                    for chunk in resp.iter_bytes(chunk_size=256 * 1024):
+                        fh.write(chunk)
+
+            # Use a parallel bzip2 decompressor when available (lbzip2 or
+            # pbzip2 scale across all cores; standard bzip2 is single-threaded
+            # and very slow on 4+ GB archives).
+            parallel_bzip2 = next(
+                (p for p in ("lbzip2", "pbzip2")
+                 if subprocess.run(["which", p], capture_output=True).returncode == 0),
+                None,
+            )
+            tar_cmd = ["tar", "xf" if parallel_bzip2 else "xjf", str(tarball_tmp),
+                       "--wildcards", "*.raucb", "-O"]
+            if parallel_bzip2:
+                tar_cmd.insert(1, f"--use-compress-program={parallel_bzip2}")
+            # Stream directly to file — avoids loading 5+ GB into Python memory.
+            try:
+                with bundle_path.open("wb") as out_fh:
+                    proc = subprocess.run(
+                        tar_cmd, stdout=out_fh, stderr=subprocess.PIPE, check=True,
+                    )
+            except Exception:
+                # Partial write; remove before re-raising so the cache stays clean.
+                bundle_path.unlink(missing_ok=True)
+                raise
+            if bundle_path.stat().st_size == 0:
+                bundle_path.unlink()
+                raise RuntimeError(f"No .raucb found in {tarball_name}")
+        finally:
+            if tarball_tmp.exists():
+                tarball_tmp.unlink()
+
+    return bundle_path
+
+
+# ------------------------------------------------------------------
+# Stream B: Device API client
+# ------------------------------------------------------------------
+
+
+def normalize_host(name: str) -> str:
+    """Expand a short device ID to the canonical fully-qualified hostname.
+
+    :param name: Short ID (e.g. ``jpah0001``) or full hostname.
+    :returns: Lowercase canonical hostname.
+
+    """
+    name = name.lower()
+    if not name.startswith("sc-aware-"):
+        return f"sc-aware-{name}"
+    return name
+
+
+def login(host: str) -> tuple[httpx.Client, str]:
+    """Open an HTTP client and authenticate against the device API.
+
+    :param host: Canonical hostname.
+    :returns: Tuple of (client, bearer_token).
+    :raises httpx.HTTPStatusError: On non-2xx login response.
+
+    """
+    client = httpx.Client(
+        base_url=f"http://{host}",
+        timeout=httpx.Timeout(30, connect=10),
+    )
+    resp = client.post(
+        "/unstable/login",
+        data={"username": "admin", "password": "password"},
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    resp.raise_for_status()
+    return client, resp.json()["access_token"]
+
+
+def _load_device_cache() -> dict:
+    """Return the persisted hw-version cache, or {} if absent or corrupt."""
+    if not DEVICES_CACHE.exists():
+        return {}
+    try:
+        return json.loads(DEVICES_CACHE.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_device_cache(cache: dict) -> None:
+    """Persist the hw-version cache to disk.
+
+    :param cache: Mapping to serialise to JSON.
+
+    """
+    DEVICES_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    DEVICES_CACHE.write_text(json.dumps(cache, indent=2))
+
+
+def _hw_via_ssh(host: str) -> str:
+    """Detect hardware revision by reading the device over SSH.
+
+    Derives the SSH password from the eth0 MAC via the existing
+    password_from_mac.sh script, then reads JETSON_FLASH_REV over SSH.
+
+    :param host: Canonical hostname.
+    :returns: ``"mk2"`` or ``"mk3"``.
+    :raises RuntimeError: If any step fails to produce a usable result.
+
+    """
+    client, token = login(host)
+    resp = client.get(
+        "/unstable/settings/network/list",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    client.close()
+    resp.raise_for_status()
+
+    mac: str | None = None
+    for dev in resp.json().get("devices", []):
+        if dev.get("device") == "eth0":
+            mac = dev.get("mac_address")
+            break
+    if not mac:
+        raise RuntimeError(f"eth0 MAC address not found on {host}")
+
+    pw_out = subprocess.run(
+        [str(PASSWORD_FROM_MAC), mac],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    match = re.search(r'Password .+ is "(\S+)"\.', pw_out.stdout)
+    if not match:
+        raise RuntimeError(f"Could not parse SSH password for {host}")
+    password = match.group(1)
+
+    ssh_out = subprocess.run(
+        [
+            "sshpass", "-p", password,
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-o", "ConnectTimeout=8",
+            f"slamcore@{host}",
+            "cat", DEVICE_VARIANT_FILE,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    variant = ssh_out.stdout.strip()
+    if variant in ("mk2", "mk3"):
+        return variant
+    raise RuntimeError(
+        f"Unexpected content in {DEVICE_VARIANT_FILE} on {host}: {variant!r}"
+    )
+
+
+def resolve_hw(host: str, cli_hw: str | None) -> str:
+    """Return the hardware revision for a host via a three-tier lookup.
+
+    Priority: explicit CLI flag → KNOWN_HW dict → local cache → SSH detection.
+    SSH results are cached and the user is reminded to commit them to KNOWN_HW.
+
+    :param host: Canonical hostname.
+    :param cli_hw: Hardware revision from the CLI, or ``None``.
+    :returns: ``"mk2"`` or ``"mk3"``.
+
+    """
+    if cli_hw:
+        return cli_hw
+    if host in KNOWN_HW:
+        return KNOWN_HW[host]
+
+    cache = _load_device_cache()
+    if "hw" in cache.get(host, {}):
+        return cache[host]["hw"]
+
+    hw = _hw_via_ssh(host)
+    cache.setdefault(host, {})["hw"] = hw
+    _save_device_cache(cache)
+    err.print(
+        f"[yellow]Detected {hw} for {host}. "
+        "Consider adding it to KNOWN_HW in the script and committing.[/yellow]"
+    )
+    return hw
+
+
+def upload_bundle(
+    client: httpx.Client,
+    token: str,
+    bundle_path: Path,
+    chunk_size: int,
+    progress: Progress,
+    task_id: TaskID,
+) -> str:
+    """Upload a bundle to the device in sequential chunks.
+
+    :param client: Authenticated HTTP client.
+    :param token: Bearer access token.
+    :param bundle_path: Local path to the .raucb file.
+    :param chunk_size: Bytes per chunk.
+    :param progress: Rich Progress instance for reporting.
+    :param task_id: Progress task to advance after each chunk.
+    :returns: Upload session UUID.
+    :raises RuntimeError: If a chunk exhausts all retries.
+
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+
+    init = client.post(
+        "/unstable/system/upgrade",
+        params={"upgrade_type": "system", "filename": bundle_path.name},
+        headers=headers,
+        timeout=30,
+    )
+    init.raise_for_status()
+    upload_id: str = init.json()
+
+    total = bundle_path.stat().st_size
+    n_chunks = (total + chunk_size - 1) // chunk_size
+    progress.update(task_id, total=n_chunks)
+
+    with bundle_path.open("rb") as fh:
+        for chunk_id in range(n_chunks):
+            data = fh.read(chunk_size)
+            for attempt in range(CHUNK_RETRIES):
+                try:
+                    r = client.put(
+                        f"/unstable/system/upgrade/{upload_id}/upload/{chunk_id}",
+                        headers=headers,
+                        files={"file": (bundle_path.name, data, "application/octet-stream")},
+                        timeout=httpx.Timeout(120, connect=10),
+                    )
+                    r.raise_for_status()
+                    break
+                except (httpx.HTTPStatusError, httpx.TransportError):
+                    if attempt == CHUNK_RETRIES - 1:
+                        raise RuntimeError(
+                            f"Chunk {chunk_id} failed after {CHUNK_RETRIES} attempts"
+                        )
+                    time.sleep(2 ** attempt)
+            progress.advance(task_id)
+
+    return upload_id
+
+
+def trigger_and_poll(
+    host: str,
+    token: str,
+    upload_id: str,
+    current_version: str,
+    target_version: str,
+    progress: Progress,
+    task_id: TaskID,
+    log_path: Path,
+) -> tuple[str, str]:
+    """Trigger the device upgrade and poll until a terminal state.
+
+    Handles the reboot cycle: ConnectError / ReadTimeout are treated as an
+    expected reboot, not a failure. A separate deadline bounds how long we
+    wait for the device to come back. After reconnect, re-login to get a
+    fresh token before resuming polling.
+
+    :param host: Canonical hostname.
+    :param token: Bearer token (used only for the initial trigger call).
+    :param upload_id: Upload session UUID from `upload_bundle`.
+    :param current_version: Version string before the upgrade, used as the
+        poll path parameter.
+    :param target_version: Expected post-upgrade version. Used as a fallback
+        oracle via /system/info when the poll endpoint becomes unavailable
+        after reboot.
+    :param progress: Rich Progress instance for live status updates.
+    :param task_id: Progress task to update with current poll phase.
+    :param log_path: Per-device log file path; receives a line per poll
+        transition, exception, and final result.
+    :returns: Tuple of ``(status, reason)`` — status is ``"success"`` or
+        ``"failed"``.
+
+    """
+    def _log(msg: str) -> None:
+        with log_path.open("a") as fh:
+            fh.write(f"[{time.strftime('%H:%M:%S')}] {msg}\n")
+
+    client, fresh_token = login(host)
+    headers = {"Authorization": f"Bearer {fresh_token}"}
+    _log("logged in for trigger")
+
+    trigger = client.post(
+        f"/unstable/system/upgrade/{upload_id}/trigger",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=60,
+    )
+    trigger.raise_for_status()
+    trigger_body = trigger.json()
+    trigger_status: str = trigger_body.get("status_response", {}).get("status", "")
+    trigger_reason: str = trigger_body.get("status_response", {}).get("reason", "")
+    _log(f"trigger response: {json.dumps(trigger_body)}")
+    if trigger_status == "failed":
+        client.close()
+        _log(f"result: trigger refused — {trigger_reason}")
+        return "failed", f"trigger refused: {trigger_reason}"
+
+    poll_start = time.monotonic()
+    last_poll_body: dict = {}
+    last_exception: str = ""
+    last_info_state: str = ""
+    rebooted = False
+    reconnected = False
+
+    def _elapsed() -> str:
+        secs = int(time.monotonic() - poll_start)
+        m, s = divmod(secs, 60)
+        return f"{m}m{s:02d}s"
+
+    def _set_desc(phase: str) -> None:
+        progress.update(task_id, description=f"[cyan]{host}[/cyan] {phase} ({_elapsed()})")
+
+    def _build_detail() -> str:
+        parts = [f"elapsed {_elapsed()}"]
+        if last_poll_body:
+            parts.append(f"last response: {json.dumps(last_poll_body)}")
+        if rebooted:
+            parts.append(f"rebooted: yes, reconnected: {'yes' if reconnected else 'no'}")
+        if last_exception:
+            parts.append(f"last error: {last_exception}")
+        return ", ".join(parts)
+
+    overall_deadline = time.monotonic() + POLL_TIMEOUT
+    reboot_deadline: float | None = None
+
+    while time.monotonic() < overall_deadline:
+        try:
+            poll = client.get(
+                f"/unstable/system/upgrade/{current_version}",
+                headers=headers,
+                timeout=15,
+            )
+            poll.raise_for_status()
+            reboot_deadline = None  # connected: device is up, reset reboot window
+            body = poll.json()
+            if body != last_poll_body:
+                _log(f"poll: {json.dumps(body)}")
+            last_poll_body = body
+            status: str = body.get("status", "ongoing")
+            poll_reason: str = body.get("reason", "")
+            label = status + (f": {poll_reason[:50]}" if poll_reason else "")
+            _set_desc(f"installing [{label}]")
+            if status == "success":
+                client.close()
+                _log(f"result: success ({poll_reason or '<no reason>'})")
+                return "success", poll_reason
+            if status == "failed":
+                client.close()
+                full_reason = (
+                    f"device reported failure: {poll_reason or '<no reason>'} "
+                    f"({_build_detail()})"
+                )
+                _log(f"result: {full_reason}")
+                return "failed", full_reason
+
+        except (
+            httpx.ConnectError,
+            httpx.ReadTimeout,
+            httpx.TransportError,
+            httpx.HTTPStatusError,
+        ) as exc:
+            # 4xx is a genuine client error — don't swallow it as "still rebooting".
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 500:
+                raise
+            last_exception = f"{type(exc).__name__}: {exc}"
+            # After reconnect, the upgrade-status endpoint can become unavailable
+            # (the upgrade context is gone once the device has booted into the new
+            # version). Cross-check /system/info — if the device reports the target
+            # version, treat the upgrade as successful.
+            if reconnected and isinstance(exc, httpx.HTTPStatusError):
+                info_state = ""
+                try:
+                    info = client.get(
+                        "/unstable/system/info", headers=headers, timeout=15,
+                    )
+                    info.raise_for_status()
+                    running = info.json()["system"]["info"]["software_version"]
+                    if Version(running) == Version(target_version):
+                        _log(
+                            f"poll URL unavailable; /system/info confirms target {running}"
+                        )
+                        client.close()
+                        return "success", f"verified via /system/info: {running}"
+                    info_state = f"info reports {running}, target {target_version}"
+                except (httpx.RequestError, httpx.HTTPStatusError) as info_exc:
+                    info_state = (
+                        f"info check failed: {type(info_exc).__name__}: {info_exc}"
+                    )
+                except (KeyError, ValueError) as info_exc:
+                    info_state = (
+                        f"info parse error: {type(info_exc).__name__}: {info_exc}"
+                    )
+                # Dedup: only log when the state changes, so 15 minutes of repeat
+                # results produce one line per distinct state, not 90.
+                if info_state and info_state != last_info_state:
+                    _log(info_state)
+                    last_info_state = info_state
+            if not rebooted:
+                _log(f"connection lost — assuming reboot: {last_exception}")
+            rebooted = True
+            if reboot_deadline is None:
+                reboot_deadline = time.monotonic() + REBOOT_TIMEOUT
+            if time.monotonic() > reboot_deadline:
+                client.close()
+                full_reason = f"Device did not come back after reboot ({_build_detail()})"
+                _log(f"result: {full_reason}")
+                return "failed", full_reason
+            _set_desc("[yellow]rebooting...[/yellow]")
+            time.sleep(POLL_INTERVAL)
+            # Re-login after reboot to get a fresh token and a live connection.
+            try:
+                new_client, fresh_token = login(host)
+                client.close()
+                client = new_client
+                headers = {"Authorization": f"Bearer {fresh_token}"}
+                if not reconnected:
+                    _log("reconnected after reboot")
+                reconnected = True
+            except (httpx.RequestError, httpx.HTTPStatusError) as relogin_exc:
+                _log(f"re-login still failing: {type(relogin_exc).__name__}: {relogin_exc}")
+            continue
+
+        time.sleep(POLL_INTERVAL)
+
+    full_reason = f"Polling timed out ({_build_detail()})"
+    client.close()
+    _log(f"result: {full_reason}")
+    return "failed", full_reason
+
+
+def verify_post_reboot(host: str, target_version: str) -> str:
+    """Return the device's current software_version after an upgrade.
+
+    Re-authenticates before querying so stale tokens are not an issue.
+    The caller compares the returned string against ``target_version``.
+
+    :param host: Canonical hostname.
+    :param target_version: Expected version (unused internally; for caller).
+    :returns: ``software_version`` string from the system info endpoint.
+
+    """
+    client, token = login(host)
+    resp = client.get(
+        "/unstable/system/info",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=15,
+    )
+    client.close()
+    resp.raise_for_status()
+    return resp.json()["system"]["info"]["software_version"]
+
+
+# ------------------------------------------------------------------
+# Stream C: Orchestration + CLI
+# ------------------------------------------------------------------
+
+
+def update_device(
+    host: str,
+    version: str,
+    bundles: dict[str, Path],
+    cli_hw: str | None,
+    progress: Progress,
+) -> DeviceResult:
+    """Orchestrate a full update on one device.
+
+    :param host: Canonical hostname.
+    :param version: Target version string.
+    :param bundles: Map of hw variant → local .raucb path.
+    :param cli_hw: Optional hw override from the CLI.
+    :param progress: Rich Progress instance (shared across threads).
+    :returns: DeviceResult describing the outcome.
+
+    """
+    result = DeviceResult(host=host, ok=False)
+
+    # Per-device log file: captures every poll response, exception, and
+    # final result for post-mortem when the summary table elides detail.
+    log_dir = CACHE_DIR / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{host}-{time.strftime('%Y%m%d-%H%M%S')}.log"
+    result.log_path = log_path
+    with log_path.open("w") as fh:
+        fh.write(f"# aware-update log for {host}\n")
+        fh.write(f"# started {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        fh.write(f"# target version: {version}\n")
+
+    try:
+        hw = resolve_hw(host, cli_hw)
+        with log_path.open("a") as fh:
+            fh.write(f"# hw: {hw}\n")
+        if hw not in bundles:
+            result.error = f"No bundle for hw={hw} (downloaded: {sorted(bundles)})"
+            return result
+
+        client, token = login(host)
+        auth = {"Authorization": f"Bearer {token}"}
+
+        info = client.get("/unstable/system/info", headers=auth, timeout=15)
+        info.raise_for_status()
+        result.version_before = info.json()["system"]["info"]["software_version"]
+        with log_path.open("a") as fh:
+            fh.write(f"# version before: {result.version_before}\n")
+
+        task_id = progress.add_task(f"[cyan]{host}[/cyan] uploading", total=1)
+        upload_id = upload_bundle(
+            client, token, bundles[hw], CHUNK_SIZE_DEFAULT, progress, task_id,
+        )
+
+        # Reset the task so TimeElapsedColumn keeps ticking during install
+        # (it freezes once completed >= total at the end of upload).
+        progress.reset(
+            task_id, total=None, description=f"[cyan]{host}[/cyan] installing",
+        )
+        status, reason = trigger_and_poll(
+            host, token, upload_id, result.version_before, version,
+            progress, task_id, log_path,
+        )
+
+        if status != "success":
+            result.error = f"Install {status}: {reason}"
+            progress.update(task_id, description=f"[red]{host}[/red] failed")
+            return result
+
+        progress.update(task_id, description=f"[cyan]{host}[/cyan] verifying")
+        result.version_after = verify_post_reboot(host, version)
+        result.ok = True
+        progress.update(
+            task_id, description=f"[green]{host}[/green] {result.version_after}",
+        )
+
+    except httpx.HTTPStatusError as exc:
+        result.error = f"HTTP {exc.response.status_code}: {exc.response.text[:120]}"
+    except httpx.ConnectError:
+        result.error = "Connection refused"
+    except Exception as exc:  # noqa: BLE001
+        result.error = f"{type(exc).__name__}: {exc}"
+
+    with log_path.open("a") as fh:
+        if result.ok:
+            fh.write(f"[{time.strftime('%H:%M:%S')}] # final: ok ({result.version_after})\n")
+        else:
+            fh.write(f"[{time.strftime('%H:%M:%S')}] # final: failed — {result.error}\n")
+    return result
+
+
+def cleanup_bundles(bundles: dict[str, Path]) -> None:
+    """Delete downloaded .raucb files and their empty parent directories."""
+    for path in bundles.values():
+        if path.exists():
+            path.unlink()
+            err.print(f"  Removed {path}")
+        # Remove hw dir if empty, then version dir if empty.
+        for parent in (path.parent, path.parent.parent):
+            try:
+                parent.rmdir()
+            except OSError:
+                pass
+
+
+def print_summary(results: list[DeviceResult]) -> None:
+    """Print a rich table summarising update outcomes for all devices."""
+    table = Table(title="Update summary", show_lines=True)
+    table.add_column("Device")
+    table.add_column("Before")
+    table.add_column("After")
+    table.add_column("Status")
+    for r in results:
+        if r.ok:
+            status = "[green]ok[/green]"
+        else:
+            status = f"[red]failed: {r.error}[/red]"
+        table.add_row(r.host, r.version_before, r.version_after, status)
+    Console().print(table)
+
+
+app = typer.Typer(help="Update Slamcore Aware devices via their HTTP API.")
+
+
+@app.command()
+def main(
+    devices: Annotated[
+        list[str],
+        typer.Option(
+            "--device", "-d",
+            help="Device host. Accepts short IDs (jpah0001) or full hostnames. Repeatable.",
+        ),
+    ],
+    version: Annotated[
+        Optional[str],
+        typer.Option(
+            "--version", "-v",
+            help="Target version, e.g. 26.04.10. Defaults to latest on buildbot.",
+        ),
+    ] = None,
+    hw: Annotated[
+        Optional[str],
+        typer.Option("--hw", help="Override hw variant for all devices: mk2 or mk3."),
+    ] = None,
+    jobs: Annotated[
+        int,
+        typer.Option("--jobs", "-j", help="Max parallel device updates. Default: min(devices, 8)."),
+    ] = 0,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Resolve version and download bundle(s), then exit without uploading.",
+        ),
+    ] = False,
+    keep_cache: Annotated[
+        bool,
+        typer.Option(
+            "--keep-cache",
+            help="Keep downloaded .raucb bundles in ~/.cache/aware-update after the run.",
+        ),
+    ] = False,
+) -> None:
+    if not devices:
+        err.print("[red]Provide at least one --device.[/red]")
+        raise typer.Exit(1)
+    if hw and hw not in ("mk2", "mk3"):
+        err.print(f"[red]--hw must be mk2 or mk3, got {hw!r}[/red]")
+        raise typer.Exit(1)
+
+    hosts = [normalize_host(d) for d in devices]
+    n_jobs = jobs or min(len(hosts), 8)
+
+    err.print(f"Resolving version{'...' if version is None else f': {version}'}")
+    target_version = resolve_version(version)
+    err.print(f"Target version: [bold]{target_version}[/bold]")
+
+    # Determine which hw variants are needed, then download (serial, max 2 variants).
+    hws_needed: set[str] = set()
+    if hw:
+        hws_needed.add(hw)
+    else:
+        for host in hosts:
+            try:
+                hws_needed.add(resolve_hw(host, None))
+            except Exception as exc:  # noqa: BLE001
+                err.print(f"[red]HW detection failed for {host}: {exc}. Use --hw to override.[/red]")
+                raise typer.Exit(1) from exc
+
+    bundles: dict[str, Path] = {}
+    for variant in sorted(hws_needed):
+        err.print(f"Ensuring {variant} bundle for {target_version}...")
+        bundles[variant] = ensure_bundle(target_version, variant)
+        err.print(f"  [green]✓[/green] {bundles[variant]}")
+
+    if dry_run:
+        err.print("[yellow]Dry-run complete. Skipping upload.[/yellow]")
+        if not keep_cache:
+            cleanup_bundles(bundles)
+        return
+
+    results: list[DeviceResult] = []
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+    ) as progress:
+        with ThreadPoolExecutor(max_workers=n_jobs) as pool:
+            futures = {
+                pool.submit(update_device, host, target_version, bundles, hw, progress): host
+                for host in hosts
+            }
+            for future in as_completed(futures):
+                results.append(future.result())
+
+    print_summary(results)
+
+    log_results = [r for r in results if r.log_path]
+    if log_results:
+        err.print("\n[bold]Per-device logs:[/bold]")
+        for r in log_results:
+            marker = "[green]✓[/green]" if r.ok else "[red]✗[/red]"
+            err.print(f"  {marker} {r.host}: {r.log_path}")
+
+    if not keep_cache:
+        cleanup_bundles(bundles)
+
+    if any(not r.ok for r in results):
+        raise typer.Exit(1)
+
+
+if __name__ == "__main__":
+    app()

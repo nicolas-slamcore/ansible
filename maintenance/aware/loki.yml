@@ -1,0 +1,7 @@
+---
+# Deploy Loki monitoring agent to aware devices
+- name: Deploy Loki monitoring agent to aware devices
+  hosts: sc-aware-jpah0001
+  become: true
+  roles:
+    - role: grafana.grafana.loki
